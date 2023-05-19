@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+import warnings
 from collections import Counter
 import tes_analysis_tools as tat
 
@@ -21,25 +22,8 @@ from tsfresh.feature_extraction import extract_features
 from tsfresh.utilities.dataframe_functions import impute
 from tsfresh.utilities.distribution import MultiprocessingDistributor
 
+warnings.filterwarnings("ignore")
 sns.set()
-
-dir = "../WF/exp1/"
-savedir = "./exp1_result/"
-pulse = np.load(dir + "pulse.npy")
-noise = np.load(dir + "noise.npy")
-time = np.load(dir + "time.npy")
-
-n = pulse.shape[0]
-dp = pulse.shape[1]
-m = noise.shape[0]
-dt = time[1] - time[0]
-
-# baseline 補正, 先頭からdpbl点の平均をoffsetとして引き去る
-dpbl = 200
-pulse = tat.correct_baseline(pulse, dpbl)
-
-# 正負反転
-pulse = -1.0 * pulse
 
 
 # データ補正 <- 18次回帰曲線
@@ -48,25 +32,31 @@ def regression(data):
     fit_fn = np.poly1d(fit)
     return fit_fn(time)
 
+
+# 標準化
 def standardize(df):
     scaler = StandardScaler()
     df_std = pd.DataFrame(scaler.fit_transform(df), columns=df.columns)
     return df_std
 
-# preprocess for tsfresh
+
+# tsfreshの特徴量に対する前処理
 def remove_constant_columns(df):
     df_filtered = df.loc[:, df.nunique() != 1]
     return df_filtered
+
 
 def remove_binary_columns(df):
     columns_to_select = df.apply(lambda col: not set(col.unique()).issubset({0, 1}))
     df_filtered = df.loc[:, columns_to_select]
     return df_filtered
 
+
 def remove_constant_or_binary_columns(df):
     columns_to_select = df.apply(lambda col: (col.nunique() != 1) and not set(col.unique()).issubset({0, 1}))
     df_filtered = df.loc[:, columns_to_select]
     return df_filtered
+
 
 def remove_corr_cols(df, threshold=0.7):
     corr = df.corr().abs()
@@ -79,20 +69,22 @@ def remove_corr_cols(df, threshold=0.7):
     df_filtered = df.drop(to_drop, axis=1)
     return df_filtered
 
+
 def preprocess(df, threshold=0.7):
     df_filtered = remove_constant_or_binary_columns(df)
     df_filtered = standardize(df_filtered)
     df_filtered = remove_corr_cols(df_filtered, threshold)
     return df_filtered
 
-# preprocess for PCA
+
+# 主成分分析の特徴量に対する前処理
 # 第一主成分の平均値が低いクラスタから0, 1, ...と再ラベリング
 def relabel_by_first_component_avg(label_col, pca_df):
     relabeled_pca_df = pca_df.copy()
     first_component_avg_per_cluster = {}
     for label in set(pca_df[label_col]):
         if label != -1:
-            first_component_avg_per_cluster[label] = pca_df[pca_df[label_col]==label]["first_component"].mean()
+            first_component_avg_per_cluster[label] = pca_df[pca_df[label_col] == label]["first_component"].mean()
     sorted_keys = sorted(first_component_avg_per_cluster, key=lambda x: first_component_avg_per_cluster[x])
     relabel_dict = {k: v for v, k in enumerate(sorted_keys)}
     relabel_dict[-1] = -1
@@ -114,9 +106,9 @@ class SupervisedClassificationModel:
         if self.features_create_method == "PCA":
             self.test_features_df = relabel_by_first_component_avg("y_pred", self.test_features_df)
 
- 
     # 特徴量生成
     def create_features(self, features_create_method):
+        print("creating features ...")
         # 主成分分析
         if features_create_method == "PCA":
             pca_model = PCA(n_components=2)
@@ -150,7 +142,7 @@ class SupervisedClassificationModel:
             extracted_features_test.to_csv("../data/tsfresh_features_test.csv", index=False)
 
             self.train_X_df, self.test_X_df = extracted_features_train, extracted_features_test
-        
+
     # 分類
     def classification(self, classification_method):
         if classification_method == "logistic_regression":
@@ -165,11 +157,11 @@ class SupervisedClassificationModel:
             model = KNeighborsClassifier()
         elif classification_method == "naive_bayes":
             model = GaussianNB()
+        print("training ...")
         model.fit(self.train_X_df.values, self.train_y_df.values)
         y_pred = model.predict(self.test_X_df.values)
         self.test_y_df = pd.DataFrame(y_pred, columns=["y_pred"])
-    
-    
+
     # testデータの光子数予測のヒストグラム
     def plot_hist(self):
         plt.hist(self.test_y_df["y_pred"], bins=128)
@@ -180,13 +172,17 @@ class SupervisedClassificationModel:
         if self.features_create_method != "PCA":
             return
         for pred_label in set(self.test_y_df["y_pred"]):
-            plt.scatter(self.test_features_df[self.test_features_df["y_pred"]==pred_label]["first_component"], self.test_features_df[self.test_features_df["y_pred"]==pred_label]["second_component"], s=2, label=pred_label)
+            plt.scatter(
+                self.test_features_df[self.test_features_df["y_pred"] == pred_label]["first_component"],
+                self.test_features_df[self.test_features_df["y_pred"] == pred_label]["second_component"],
+                s=2,
+                label=pred_label,
+            )
         plt.legend()
         plt.show()
 
 
 if __name__ == "__main__":
-
     # -----------------------
     # データ読み込み
     # -----------------------
@@ -252,7 +248,7 @@ if __name__ == "__main__":
 
     # テストデータ
     test_df = pd.DataFrame(pulse)
-    
+
     # テストデータを曲線にフィッティングする場合
     test_df = test_df.apply(regression, axis=1, result_type="expand")
 
